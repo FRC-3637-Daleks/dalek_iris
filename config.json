@@ -1,0 +1,12 @@
+{
+    "all_measurements_are_in_inches": "THIS IS A NOTE, NOT A VALUE, both rad and height are in inches",
+    "camera_matrix": [
+        [1520.0, 0.0, 960.0],
+        [0.0, 1520.0, 540.0],
+        [0.0, 0.0, 1.0]
+    ],
+    "dist_coeffs": [0.0, 0.0, 0.0, 0.0, 0.0],
+    "KNOWN_RADIUS": 3.0,
+    "FOCAL_LENGTH": 1520.0,
+    "HEIGHT_OFF_FLOOR": 12
+}

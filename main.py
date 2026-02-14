@@ -1,16 +1,31 @@
-# This is a sample Python script.
-
-# Press Shift+F10 to execute it or replace it with your code.
-# Press Double Shift to search everywhere for classes, files, tool windows, actions, and settings.
 
 
-def print_hi(name):
-    # Use a breakpoint in the code line below to debug your script.
-    print(f'Hi, {name}')  # Press Ctrl+8 to toggle the breakpoint.
+
+import json
+
+import cv2
+import numpy as np
+from Image import Image
+
+def load_config(filepath='config.json'):
+    with open(filepath, 'r') as f:
+        data = json.load(f)
+
+    camera_matrix = np.array(data['camera_matrix'])
+    dist_coeffs = np.array(data['dist_coeffs'])
+    known_radius = data['KNOWN_RADIUS']
+    focal_length = data['FOCAL_LENGTH']
+    height_off_floor = data['HEIGHT_OFF_FLOOR']
+
+    return camera_matrix, dist_coeffs, known_radius, focal_length, height_off_floor
 
 
-# Press the green button in the gutter to run the script.
-if __name__ == '__main__':
-    print_hi('PyCharm')
+mtx, dist, radius, fl, hof = load_config()
+imgPros = Image(mtx, dist, radius, fl, hof)
+print(f"Loaded Matrix:\n{mtx}")
 
-# See PyCharm help at https://www.jetbrains.com/help/pycharm/
+img = cv2.imread('testImg/img1.jpg')
+img = imgPros.convertToHSV(img)
+img = imgPros.filterYellow(img)
+
+cv2.imwrite('out.png', img)
