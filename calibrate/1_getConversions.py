@@ -1,8 +1,3 @@
-print("""
-In ./0_sourceImg, put all images, going from 24-3ft, label images with there distance (ie 24.jpeg or 03.jpeg)
-For right now this only supports fuel in a straight line with camera not doing any significant distortion
-""")
-
 import cv2
 import numpy as np
 import json
@@ -15,7 +10,6 @@ def process_fuel_images(input_folder, output_file, preview_folder):
     if not os.path.exists(preview_folder):
         os.makedirs(preview_folder)
 
-    # Get all jpeg files and sort them (e.g., 24.jpeg down to 03.jpeg)
     image_paths = glob.glob(os.path.join(input_folder, "*.jpeg"))
     image_paths.sort(key=lambda f: int(re.search(r'(\d+)', os.path.basename(f)).group(1)), reverse=True)
 
@@ -23,7 +17,6 @@ def process_fuel_images(input_folder, output_file, preview_folder):
 
     for img_path in image_paths:
         filename = os.path.basename(img_path)
-        # Extract distance from filename (e.g. "24.jpeg" -> 24)
         dist_match = re.search(r'(\d+)', filename)
         distance = int(dist_match.group(1)) if dist_match else 0
 
@@ -31,98 +24,94 @@ def process_fuel_images(input_folder, output_file, preview_folder):
         if img is None: continue
         height, width, _ = img.shape
 
-        # 1. Color Segmentation (Yellow)
+        # 1. Improved Color Segmentation
         hsv = cv2.cvtColor(img, cv2.COLOR_BGR2HSV)
-        # Refined range for yellow game pieces under typical indoor lighting
-        lower_yellow = np.array([20, 100, 100])
+        lower_yellow = np.array([15, 90, 80])
         upper_yellow = np.array([40, 255, 255])
         mask = cv2.inRange(hsv, lower_yellow, upper_yellow)
 
-        # Cleanup mask
-        kernel = np.ones((5, 5), np.uint8)
+        # Close gaps inside balls (logos, marks) and open to remove small noise
+        kernel = np.ones((7, 7), np.uint8)
+        mask = cv2.morphologyEx(mask, cv2.MORPH_CLOSE, kernel)
         mask = cv2.morphologyEx(mask, cv2.MORPH_OPEN, kernel)
 
-        # 2. Find Blobs/Centers
+        # 2. Extract Detections
         contours, _ = cv2.findContours(mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
-        centers = []
+        candidates = []
         for cnt in contours:
             area = cv2.contourArea(cnt)
-            if area < 100: continue  # Filter noise
-
+            if area < 100: continue
             M = cv2.moments(cnt)
             if M["m00"] != 0:
-                cx = int(M["m10"] / M["m00"])
-                cy = int(M["m01"] / M["m00"])
-                centers.append((cx, cy))
+                cx, cy = int(M["m10"] / M["m00"]), int(M["m01"] / M["m00"])
+                candidates.append({'x': cx, 'y': cy, 'area': area})
 
-        if not centers:
-            print(f"Warning: No balls detected in {filename}")
-            continue
+        if not candidates: continue
 
-        # Sort detections by X coordinate
-        centers.sort(key=lambda c: c[0])
+        # 3. Filter out reflections based on Y-density
+        # Reflections are usually below the main row. We sort by Y (ascending = top to bottom)
+        candidates.sort(key=lambda c: c['y'])
 
-        # 3. Calculate common Y (linear line)
-        all_y = [c[1] for c in centers]
-        common_y = int(np.mean(all_y))
+        # Heuristic: Find the most consistent Y-level (the real row)
+        # We take the Y of the top-most few balls as the 'target'
+        target_y = np.median([c['y'] for c in candidates[:min(len(candidates), 5)]])
+        # Reject anything significantly lower than the top row (reflecting below)
+        # We allow a small buffer for lens distortion
+        valid_candidates = [c for c in candidates if abs(c['y'] - target_y) < (height * 0.1)]
 
-        # 4. Map to Grid Indices (0 to 10)
-        # We calculate the average pixel distance between adjacent balls to find the 'foot' unit
-        if len(centers) > 1:
-            gaps = [centers[i + 1][0] - centers[i][0] for i in range(len(centers) - 1)]
-            # Use median to ignore gaps where balls are missing
+        if not valid_candidates: continue
+        valid_candidates.sort(key=lambda b: b['x'])
+
+        # 4. Grid Mapping with Conflict Resolution
+        # Calculate pixel-to-index unit
+        if len(valid_candidates) > 1:
+            gaps = [valid_candidates[i + 1]['x'] - valid_candidates[i]['x'] for i in range(len(valid_candidates) - 1)]
             pixel_unit = np.median(gaps)
+            img_center_x = width / 2
 
-            # Anchor indices based on the assumption that the balls are centered in the image
-            # or by relative distance if at least one end is known.
-            # Heuristic: Find relative indices first
-            relative_indices = [0]
-            for i in range(len(centers) - 1):
-                gap = centers[i + 1][0] - centers[i][0]
-                num_steps = round(gap / pixel_unit)
-                relative_indices.append(relative_indices[-1] + num_steps)
+            # Map every candidate to an ID
+            # If multiple balls hit the same ID, we keep the one with MINIMUM Y (top-most)
+            id_map = {}
+            for cand in valid_candidates:
+                # Find relative ID
+                rel_gap = (cand['x'] - valid_candidates[0]['x']) / pixel_unit
+                # Estimate starting index based on image center if possible, 
+                # or just use first ball as anchor 0
+                estimated_id = round(rel_gap)
 
-            # Offset relative indices so they sit within 0-10 based on horizontal center
-            total_span = relative_indices[-1]
-            offset = (10 - total_span) // 2
-            final_indices = [idx + offset for idx in relative_indices]
+                if estimated_id not in id_map or cand['y'] < id_map[estimated_id]['y']:
+                    id_map[estimated_id] = cand
+
+            # Normalize IDs to 0-10 range based on image centering
+            all_ids = sorted(id_map.keys())
+            span = all_ids[-1] - all_ids[0]
+            offset = (10 - span) // 2 - all_ids[0]
+
+            final_balls = []
+            for raw_id, ball in id_map.items():
+                final_id = max(0, min(10, raw_id + offset))
+                final_balls.append({"index": final_id, "x": ball['x'], "y": ball['y']})
         else:
-            final_indices = [5]  # Default to center if only one ball
+            final_balls = [{"index": 5, "x": valid_candidates[0]['x'], "y": valid_candidates[0]['y']}]
 
-        # 5. Prepare Data and Visualization
-        ball_entries = []
+        # Final Common Y is the average of the "survivors"
+        common_y = int(np.mean([b['y'] for b in final_balls]))
+
+        # 5. Export and Preview
+        master_data[filename] = {"distance_ft": distance, "common_y": common_y, "balls": final_balls}
+
         preview_img = img.copy()
-
-        # Draw the common Y line
         cv2.line(preview_img, (0, common_y), (width, common_y), (0, 255, 0), 2)
-
-        for i, (cx, cy) in enumerate(centers):
-            idx = int(final_indices[i])
-            ball_entries.append({
-                "index": idx,
-                "x": cx,
-                "y": cy
-            })
-
-            # Draw detections for verification
-            cv2.circle(preview_img, (cx, cy), 12, (0, 0, 255), -1)
-            cv2.putText(preview_img, f"ID:{idx}", (cx - 15, cy - 20),
+        for b in final_balls:
+            cv2.circle(preview_img, (b['x'], b['y']), 8, (0, 0, 255), -1)
+            cv2.putText(preview_img, f"ID:{b['index']}", (b['x'] - 15, b['y'] - 15),
                         cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255, 255, 255), 2)
-
-        master_data[filename] = {
-            "distance_ft": distance,
-            "common_y": common_y,
-            "balls": ball_entries
-        }
 
         cv2.imwrite(os.path.join(preview_folder, f"out_{filename}"), preview_img)
 
-    # Export to JSON
     with open(output_file, 'w') as f:
         json.dump(master_data, f, indent=4)
-
-    print(f"Success! Processed {len(master_data)} images.")
-    print(f"Data: {output_file} | Previews: {preview_folder}")
+    print("Done. Reflections filtered.")
 
 
 if __name__ == "__main__":
