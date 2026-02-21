@@ -1,0 +1,167 @@
+import cv2
+import numpy as np
+import json
+import matplotlib.pyplot as plt
+from scipy.optimize import curve_fit
+
+# Load data from previous step
+DATA_PATH = "2_DataCleaned.json"
+with open(DATA_PATH, 'r') as f:
+    master_data = json.load(f)
+
+# Collect all points into a flat list
+# Format: [dist_ft, id, pixel_x, pixel_y]
+all_points = []
+for filename, entry in master_data.items():
+    dist = entry['distance_ft']
+    for b in entry['balls']:
+        all_points.append([dist, b['index'], b['x'], b['y']])
+
+all_points = np.array(all_points)
+
+
+def rotate_points(pts, angle_deg, center_x, center_y):
+    """ Rotates 2D points (x, y) around a center point. """
+    theta = np.radians(angle_deg)
+    c, s = np.cos(theta), np.sin(theta)
+    R = np.array(((c, -s), (s, c)))
+
+    # Shift to origin, rotate, shift back
+    xy = pts[:, 2:4] - [center_x, center_y]
+    rotated_xy = np.dot(xy, R.T) + [center_x, center_y]
+
+    new_pts = pts.copy()
+    new_pts[:, 2:4] = rotated_xy
+    return new_pts
+
+
+def draw_calibration_gui(angle):
+    # Setup canvas (Assuming typical 1280x720 or 1920x1080)
+    # Adjust canvas size if your source images are different
+    h, w = 800, 1000
+    canvas = np.zeros((h, w, 3), dtype=np.uint8)
+
+    # We rotate around the approximate center of the point cloud
+    center_x = np.mean(all_points[:, 2])
+    center_y = np.mean(all_points[:, 3])
+
+    pts = rotate_points(all_points, angle, center_x, center_y)
+
+    # Scale points for display
+    display_scale = 0.5
+
+    # Draw points connected by ID (the vertical lines)
+    for i in range(11):  # IDs 0-10
+        id_points = pts[pts[:, 1] == i]
+        id_points = id_points[id_points[:, 0].argsort()]  # Sort by distance
+
+        for j in range(len(id_points) - 1):
+            p1 = (int(id_points[j, 2] * display_scale), int(id_points[j, 3] * display_scale))
+            p2 = (int(id_points[j + 1, 2] * display_scale), int(id_points[j + 1, 3] * display_scale))
+            cv2.line(canvas, p1, p2, (0, 255, 0), 1)
+            cv2.circle(canvas, p1, 3, (0, 0, 255), -1)
+
+    cv2.putText(canvas, f"Rotation: {angle:.2f} deg", (20, 40),
+                cv2.FONT_HERSHEY_SIMPLEX, 0.8, (255, 255, 255), 2)
+    cv2.putText(canvas, "Adjust slider until ID lines are vertical/symmetric. Press ENTER to solve.",
+                (20, h - 20), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (200, 200, 200), 1)
+    return canvas, pts
+
+
+# Interactive Slider
+cv2.namedWindow("Calibration")
+cv2.createTrackbar("Roll Correction", "Calibration", 500, 1000, lambda x: None)
+
+final_pts = None
+while True:
+    val = cv2.getTrackbarPos("Roll Correction", "Calibration")
+    angle = (val - 500) / 50.0  # Range +/- 10 degrees
+
+    display, current_pts = draw_calibration_gui(angle)
+    cv2.imshow("Calibration", display)
+
+    key = cv2.waitKey(1)
+    if key == 13:  # Enter key
+        final_pts = current_pts
+        final_angle = angle
+        break
+    if key == 27:  # Esc key
+        exit()
+
+cv2.destroyAllWindows()
+
+# --- REGRESSION PHASE ---
+
+# 1. Distance Regression: Z = f(y)
+# Typically Z = a / (y + b) + c or a polynomial in 1/y
+z_vals = final_pts[:, 0]
+y_pixels = final_pts[:, 3]
+
+# Fit a 2nd degree polynomial: Z = c2*y^2 + c1*y + c0
+z_coeffs = np.polyfit(y_pixels, z_vals, 2)
+z_func = np.poly1d(z_coeffs)
+
+# 2. Horizontal Regression: X_world = Z * (pixel_x * m + b)
+# We calculate (X_world / Z) vs pixel_x
+x_world = final_pts[:, 1] - 5.0  # Index 0-10 is the world X in feet
+x_ratio = x_world / z_vals
+x_pixels = final_pts[:, 2]
+
+x_coeffs = np.polyfit(x_pixels, x_ratio, 1)  # Linear fit: Ratio = m*px + b
+x_m, x_b = x_coeffs
+
+# --- OUTPUT MATH ---
+
+print("\n--- CALIBRATION RESULTS ---")
+print(f"Rotation Correction: {final_angle:.2f} degrees")
+print("\nPython function to use in your robot code:")
+print("-" * 40)
+code = f"""
+def get_3d_coords(pixel_x, pixel_y):
+    # 1. Rotate point to correct camera tilt
+    import math
+    angle_rad = math.radians({final_angle:.4f})
+    cx, cy = {np.mean(all_points[:, 2]):.1f}, {np.mean(all_points[:, 3]):.1f}
+
+    # Shift to rotation center
+    nx = pixel_x - cx
+    ny = pixel_y - cy
+
+    # Rotate
+    rx = nx * math.cos(angle_rad) - ny * math.sin(angle_rad) + cx
+    ry = nx * math.sin(angle_rad) + ny * math.cos(angle_rad) + cy
+
+    # 2. Calculate Distance Z (feet)
+    z = {z_coeffs[0]:.8f} * (ry**2) + {z_coeffs[1]:.8f} * ry + {z_coeffs[2]:.8f}
+
+    # 3. Calculate Horizontal X (feet)
+    # Formula: X = Z * (pixel_x * m + b)
+    x = z * (rx * {x_m:.8f} + ({x_b:.8f}))
+
+    return x, z
+"""
+print(code)
+print("-" * 40)
+
+# Visual Verification of fit
+plt.figure(figsize=(10, 5))
+plt.subplot(1, 2, 1)
+plt.scatter(y_pixels, z_vals, label="Data")
+y_range = np.linspace(min(y_pixels), max(y_pixels), 100)
+plt.plot(y_range, z_func(y_range), color='red', label="Fit")
+plt.title("Z Distance vs Pixel Y")
+plt.xlabel("Pixel Y")
+plt.ylabel("Feet")
+plt.legend()
+
+plt.subplot(1, 2, 2)
+plt.scatter(x_pixels, x_ratio, label="Data")
+x_range = np.linspace(min(x_pixels), max(x_pixels), 100)
+plt.plot(x_range, x_range * x_m + x_b, color='red', label="Fit")
+plt.title("X/Z Ratio vs Pixel X")
+plt.xlabel("Pixel X")
+plt.ylabel("X/Z Ratio")
+plt.legend()
+
+plt.tight_layout()
+plt.show()
