@@ -1,15 +1,55 @@
 import json
 import cv2
 import numpy as np
+import os
+import glob
+import re
+from ultralytics import YOLO
 
-# Import your existing 3D transform function
 from get_3d_coords import get_3d_coords
 
-# =========================================================
-# CONFIGURATION
-# =========================================================
 DEBUG = True  # Set to True to enable live 2D plotting & camera windows
 CAMERA_INDEX = 1  # 0 is usually the built-in webcam, 1 or 2 for plugged in USB cams
+EXPOSURE_VALUE = -9
+
+model = YOLO('calibrate/model.pt')
+
+def get_fuel_centers_ai(img, confidence=0.15):
+    """
+    Returns a list of dictionaries [{'x': cx, 'y': cy, 'area': a}]
+    """
+    # Run AI inference
+    # conf=0.5 ignores anything the AI is less than 50% sure is a ball
+    results = model.predict(img, conf=confidence, verbose=False)
+    
+    candidates = []
+    
+    for result in results:
+        for box in result.boxes:
+            # Get coordinates [x_min, y_min, x_max, y_max]
+            x1, y1, x2, y2 = box.xyxy[0].tolist()
+            
+            # Calculate the center of the box
+            cx = int((x1 + x2) / 2)
+            cy = int((y1 + y2) / 2)
+            
+            w = x2 - x1
+            h = y2 - y1
+            area = int(w*h)
+            
+            candidates.append({'x': cx, 'y': cy, 'area': area})
+            
+    return candidates
+
+
+def set_exposure(cap, value):
+
+    # 1. Turn off Auto Exposure
+    # On many cameras: 1 is manual mode, 3 is auto mode.
+    cap.set(cv2.CAP_PROP_AUTO_EXPOSURE, 1) 
+    
+    # 2. Set the Exposure value
+    cap.set(cv2.CAP_PROP_EXPOSURE, value)
 
 
 def getImg(cap):
@@ -67,55 +107,93 @@ def draw_2d_map(fuel_offsets):
 
     return map_img
 
-
-def processImg(img):
-    """
-    Finds yellow blobs, translates to 2D relative offset coordinates,
-    and returns them as a list. Displays debug views if DEBUG is True.
-    """
-    # --- Yellow mask ---
+###def processImg(img):
+    # 1. Convert to Grayscale (HoughCircles works best on single channel)
+    # We use the 'Saturation' or 'Value' channel from HSV to make the balls stand out
     hsv = cv2.cvtColor(img, cv2.COLOR_BGR2HSV)
+    
+    # We filter for yellow first to isolate the balls
     mask = cv2.inRange(hsv, np.array([15, 90, 90]), np.array([35, 255, 255]))
+    
+    # 2. Blur the image to reduce noise
+    # This helps the computer not get distracted by logos or scuff marks
+    blurred = cv2.medianBlur(mask, 7)
 
-    # --- Clean up noise ---
-    kernel = np.ones((5, 5), np.uint8)
-    mask = cv2.morphologyEx(mask, cv2.MORPH_OPEN, kernel)
-    mask = cv2.morphologyEx(mask, cv2.MORPH_CLOSE, kernel)
+    # 3. Hough Circle Transform
+    # This specifically looks for round shapes
+    circles = cv2.HoughCircles(
+        blurred, 
+        cv2.HOUGH_GRADIENT, 
+        dp=1, 
+        minDist=30,      # Minimum distance between centers of detected circles
+        param1=50,       # Sensitivity 
+        param2=20,       # Accuracy (lower = more circles detected, but more "fake" ones)
+        minRadius=10,    # Minimum ball size in pixels
+        maxRadius=100    # Maximum ball size in pixels
+    )
 
-    # --- Find connected blobs ---
-    num_labels, labels, stats, centroids = cv2.connectedComponentsWithStats(mask, connectivity=8)
-
-    MIN_BLOB_AREA = 200  # pixels² — filters out noise
-
-    # This list will hold the (X, Z) relative coordinate offsets for this frame
     fuel_offsets = []
 
-    for i in range(1, num_labels):  # Skip background (label 0)
-        area = stats[i, cv2.CC_STAT_AREA]
-        if area < MIN_BLOB_AREA:
-            continue
+    if circles is not None:
+        circles = np.uint16(np.around(circles))
+        for i in circles[0, :]:
+            cx_px = i[0]
+            cy_px = i[1]
+            radius = i[2]
 
-        cx_px, cy_px = centroids[i]
+            # Calculate coordinate using your existing 3D function
+            wx, wz = get_3d_coords(cx_px, cy_px)
 
-        # Calculate coordinate
-        wx, wz = get_3d_coords(cx_px, cy_px)
+            # Sanity filter
+            if 0.5 < wz < 35 and -10 < wx < 10:
+                fuel_offsets.append((wx, wz))
 
-        # Sanity filter — ignore points behind robot or impossibly far
-        if 0.5 < wz < 35 and -10 < wx < 10:
-            fuel_offsets.append((wx, wz))
+                if DEBUG:
+                    # Draw the outer circle
+                    cv2.circle(img, (cx_px, cy_px), radius, (0, 255, 0), 2)
+                    # Draw the center of the circle
+                    cv2.circle(img, (cx_px, cy_px), 2, (0, 0, 255), 3)
 
-            # Draw over the camera feed if debugging
-            if DEBUG:
-                radius = int(np.sqrt(area / np.pi))
-                cv2.circle(img, (int(cx_px), int(cy_px)), radius, (0, 255, 255), 2)
-                cv2.drawMarker(img, (int(cx_px), int(cy_px)), (0, 0, 255),
-                               markerType=cv2.MARKER_CROSS, markerSize=10, thickness=2)
-
-    # Render display if DEBUG mode is enabled
     if DEBUG:
         map_view = draw_2d_map(fuel_offsets)
+        cv2.imshow("Camera View (Hough Circles)", img)
+        cv2.imshow("Robot-Centric Map", map_view)
 
-        cv2.imshow("Camera View (Live)", img)
+    return fuel_offsets
+    
+
+def processImg(img):
+    results = model.predict(img, conf=0.15, verbose=False)
+
+    fuel_offsets = []
+
+    for result in results:
+        for box in result.boxes:
+            x1, y1, x2, y2 = box.xyxy[0].tolist()
+            
+            cx_px = int((x1 + x2) / 2)
+            cy_px = int((y1 + y2) / 2)
+
+            wx, wz = get_3d_coords(cx_px, cy_px)
+
+            if 0.5 < wz < 35 and -10 < wx < 10:
+                fuel_offsets.append((wx, wz))
+
+                if DEBUG:
+                    # Draw Bounding Box
+                    cv2.rectangle(img, (int(x1), int(y1)), (int(x2), int(y2)), (0, 255, 0), 2)
+                    
+                    # Draw Center Marker
+                    cv2.drawMarker(img, (cx_px, cy_px), (0, 0, 255),
+                                   markerType=cv2.MARKER_CROSS, markerSize=10, thickness=2)
+                    
+                    # Label with distance
+                    cv2.putText(img, f"{wz:.1f}ft", (int(x1), int(y1) - 10),
+                                cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 255, 0), 1)
+
+    if DEBUG:
+        map_view = draw_2d_map(fuel_offsets)
+        cv2.imshow("AI Detection View", img)
         cv2.imshow("Robot-Centric Map (Top-Down)", map_view)
 
     return fuel_offsets
@@ -128,7 +206,9 @@ def main():
         print(f"Error: Could not open camera {CAMERA_INDEX}.")
         return
 
-    print("Starting loop. " + ("Press 'q' in the window to quit." if DEBUG else "Press Ctrl+C in terminal to stop."))
+    set_exposure(cap, EXPOSURE_VALUE)
+
+    print("Starting AI Vision Loop...")
 
     try:
         while True:
@@ -138,22 +218,17 @@ def main():
                 continue
 
             # 2. Process image and get the current relative fuel offsets
-            # This list is gathered, returned, and currently unimplemented to any robot logic
+            # This now uses the AI logic inside processImg
             current_fuel_coords = processImg(frame)
-
-            # Example representation of the list currently populated:
-            # current_fuel_coords =[(1.2, 5.5), (-3.4, 8.2), ...]
 
             # 3. Handle OpenCV Windows and breaks
             if DEBUG:
-                # waitKey is required to make imshow windows update
                 if cv2.waitKey(1) & 0xFF == ord('q'):
                     break
 
     except KeyboardInterrupt:
         print("\nInterrupted by user.")
 
-    # Clean up once the loop ends
     cap.release()
     cv2.destroyAllWindows()
 
