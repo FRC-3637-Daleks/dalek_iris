@@ -109,18 +109,18 @@ def draw_2d_map(fuel_offsets):
     
 
 def processImg(img):
-    results = model.predict(img, conf=0.15, verbose=False)
+    results = model.predict(img, conf=0.25, verbose=False)
 
     fuel_offsets = []
 
     for result in results:
         for box in result.boxes:
             x1, y1, x2, y2 = box.xyxy[0].tolist()
-            
+
             cx_px = int((x1 + x2) / 2)
             cy_px = int((y1 + y2) / 2)
-
-            wx, wz = get_3d_coords(cx_px, cy_px, 1920, 1080)
+            print(cx_px, cy_px)
+            wx, wz = get_3d_coords(cx_px, cy_px, 640, 480)
 
             if 0.5 < wz < 35 and -10 < wx < 10:
                 fuel_offsets.append((wx, wz))
@@ -134,7 +134,7 @@ def processImg(img):
                                    markerType=cv2.MARKER_CROSS, markerSize=10, thickness=2)
                     
                     # Label with distance
-                    cv2.putText(img, f"{wz:.1f}ft", (int(x1), int(y1) - 10),
+                    cv2.putText(img, f"{wz:.1f}ft {wx:.1f}ftx", (int(x1), int(y1) - 10),
                                 cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 255, 0), 1)
 
     if DEBUG:

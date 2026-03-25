@@ -46,7 +46,8 @@ def draw_calibration_gui(angle):
     center_x = np.mean(all_points[:, 2])
     center_y = np.mean(all_points[:, 3])
 
-    pts = rotate_points(all_points, angle, center_x, center_y)
+    pts = all_points
+    #rotate_points(all_points, angle, center_x, center_y)
 
     # Scale points for display
     display_scale = 0.5
@@ -102,7 +103,6 @@ z_vals = final_pts[:, 0]
 
 norm_x_vals = (final_pts[:, 2] - (w / 2)) / (w / 2)
 y_pixels = (final_pts[:, 3] * 1) / (h)
-print(y_pixels)
 
 # 3. Fit Distance Z
 # p0: [a, b, c]. For raw pixels, 'a' needs to be a large number (like 5000)
@@ -115,7 +115,8 @@ except:
     a_fit, b_fit, c_fit = 0, 0, 0
 
 # 4. Horizontal Regression: X_world = Z * (pixel_x * m + b)
-x_world = final_pts[:, 1] - 5.0  # Center is ID 5
+x_world = final_pts[:, 1]  - 5 # Center is ID 5
+print(x_world)
 x_ratio = x_world / z_vals
 x_coeffs = np.polyfit(norm_x_vals, x_ratio, 1)  # Linear fit
 x_m, x_b = x_coeffs
