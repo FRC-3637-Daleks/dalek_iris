@@ -106,60 +106,6 @@ def draw_2d_map(fuel_offsets):
         cv2.circle(map_img, (px, py), 6, (0, 255, 255), -1)  # Yellow dots
 
     return map_img
-
-###def processImg(img):
-    # 1. Convert to Grayscale (HoughCircles works best on single channel)
-    # We use the 'Saturation' or 'Value' channel from HSV to make the balls stand out
-    hsv = cv2.cvtColor(img, cv2.COLOR_BGR2HSV)
-    
-    # We filter for yellow first to isolate the balls
-    mask = cv2.inRange(hsv, np.array([15, 90, 90]), np.array([35, 255, 255]))
-    
-    # 2. Blur the image to reduce noise
-    # This helps the computer not get distracted by logos or scuff marks
-    blurred = cv2.medianBlur(mask, 7)
-
-    # 3. Hough Circle Transform
-    # This specifically looks for round shapes
-    circles = cv2.HoughCircles(
-        blurred, 
-        cv2.HOUGH_GRADIENT, 
-        dp=1, 
-        minDist=30,      # Minimum distance between centers of detected circles
-        param1=50,       # Sensitivity 
-        param2=20,       # Accuracy (lower = more circles detected, but more "fake" ones)
-        minRadius=10,    # Minimum ball size in pixels
-        maxRadius=100    # Maximum ball size in pixels
-    )
-
-    fuel_offsets = []
-
-    if circles is not None:
-        circles = np.uint16(np.around(circles))
-        for i in circles[0, :]:
-            cx_px = i[0]
-            cy_px = i[1]
-            radius = i[2]
-
-            # Calculate coordinate using your existing 3D function
-            wx, wz = get_3d_coords(cx_px, cy_px)
-
-            # Sanity filter
-            if 0.5 < wz < 35 and -10 < wx < 10:
-                fuel_offsets.append((wx, wz))
-
-                if DEBUG:
-                    # Draw the outer circle
-                    cv2.circle(img, (cx_px, cy_px), radius, (0, 255, 0), 2)
-                    # Draw the center of the circle
-                    cv2.circle(img, (cx_px, cy_px), 2, (0, 0, 255), 3)
-
-    if DEBUG:
-        map_view = draw_2d_map(fuel_offsets)
-        cv2.imshow("Camera View (Hough Circles)", img)
-        cv2.imshow("Robot-Centric Map", map_view)
-
-    return fuel_offsets
     
 
 def processImg(img):
@@ -174,7 +120,7 @@ def processImg(img):
             cx_px = int((x1 + x2) / 2)
             cy_px = int((y1 + y2) / 2)
 
-            wx, wz = get_3d_coords(cx_px, cy_px)
+            wx, wz = get_3d_coords(cx_px, cy_px, 1920, 1080)
 
             if 0.5 < wz < 35 and -10 < wx < 10:
                 fuel_offsets.append((wx, wz))

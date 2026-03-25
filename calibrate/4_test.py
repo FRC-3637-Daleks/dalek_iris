@@ -1,28 +1,29 @@
+import math
 print("Paste in the function")
 
 # =========================================================
 # PASTE YOUR FUNCTION FROM SCRIPT 3 HERE
 # =========================================================
-def get_3d_coords(pixel_x, pixel_y):
-    # 1. Rotate point to correct camera tilt
-    import math
+def get_3d_coords(pixel_x, pixel_y, w, h):
     angle_rad = math.radians(0.0000)
     cx, cy = 998.6, 166.4
+
+
 
     # Shift to rotation center
     nx = pixel_x - cx
     ny = pixel_y - cy
 
     # Rotate
-    rx = nx * math.cos(angle_rad) - ny * math.sin(angle_rad) + cx
-    ry = nx * math.sin(angle_rad) + ny * math.cos(angle_rad) + cy
+    rx = (nx * math.cos(angle_rad) - ny * math.sin(angle_rad) + cx - w/2)/(w/2)
+    ry = (nx * math.sin(angle_rad) + ny * math.cos(angle_rad) + cy)/(h)
 
     # 2. Calculate Distance Z (feet)
-    z = 0.00010625 * (ry**2) + -0.10210374 * ry + 26.51195823
+    z = 3.82850530 / (ry + 0.07729443) + -0.74802465
 
     # 3. Calculate Horizontal X (feet)
     # Formula: X = Z * (pixel_x * m + b)
-    x = z * (rx * 0.00068038 + (-0.68897339))
+    x = z * (rx * 0.65112527 + (-0.03784812))
 
     return x, z
 # =========================================================
@@ -35,7 +36,9 @@ import random
 import os
 
 def run_test():
-    images = glob.glob("./0_sourceImg/*.jpeg")
+    images = glob.glob("./0_sourceImg/18.jpeg")
+    img = cv2.imread("./0_sourceImg/18.jpeg")
+    h, w = img.shape[:2]
     if not images: return
 
     img_path = random.choice(images)
@@ -71,7 +74,7 @@ def run_test():
         # top_y = stats[i, cv2.CC_STAT_TOP]
         # cy_px = top_y + stats[i, cv2.CC_STAT_HEIGHT] * 0.5  # mid-height
 
-        wx, wz = get_3d_coords(cx_px, cy_px)
+        wx, wz = get_3d_coords(cx_px, cy_px, w, h)
 
         # Sanity filter — ignore points behind robot or impossibly far
         if 0.5 < wz < 35 and -10 < wx < 10:
